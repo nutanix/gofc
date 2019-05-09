@@ -5,58 +5,117 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"github.com/nutanix/gofc/ofprotocol/ofp13"
 	"net"
 	"strings"
-
-	"github.com/nutanix/gofc/ofprotocol/ofp13"
+	"sync/atomic"
 )
 
 // datapath
 type Datapath struct {
-	buffer     chan *bytes.Buffer
-	conn       *net.TCPConn
+	done       chan bool
+	conn       net.Conn
 	datapathId uint64
 	sendBuffer chan *ofp13.OFMessage
+	readBuffer chan []byte
 	ofpversion string
 	ports      int
+	server     *OFController
+	inShutdown int32
+	onClose    []func(dp *Datapath)
 }
 
 /**
  * ctor
  */
-func NewDatapath(conn *net.TCPConn) *Datapath {
+func NewDatapath(conn net.Conn, s *OFController) *Datapath {
 	dp := new(Datapath)
 	dp.sendBuffer = make(chan *ofp13.OFMessage, 10)
+	dp.readBuffer = make(chan []byte, 10)
+	dp.done = make(chan bool, 2)
 	dp.conn = conn
+	dp.server = s
 	return dp
 }
 
+func (dp *Datapath) Shutdown() {
+	atomic.StoreInt32(&dp.inShutdown, 1)
+	close(dp.readBuffer)
+	<-dp.done
+	close(dp.sendBuffer)
+	<-dp.done
+	close(dp.done)
+	dp.Close()
+}
+
+func (dp *Datapath) isShuttingDown() bool { return atomic.LoadInt32(&dp.inShutdown) == 1 }
+
+func (dp *Datapath) RegisterOnClose(f func(dp *Datapath)) {
+	if dp.isShuttingDown() {
+		return
+	}
+	dp.onClose = append(dp.onClose, f)
+}
+
+func (dp *Datapath) Close() {
+	atomic.StoreInt32(&dp.inShutdown, 1)
+	if err := dp.conn.Close(); err != nil {
+		fmt.Printf("%v", err)
+	}
+	for _, f := range dp.onClose {
+		f(dp)
+	}
+}
+
 func (dp *Datapath) sendLoop() {
+	defer func() { dp.done <- true }()
 	for {
 		// wait channel
-		msg := <-(dp.sendBuffer)
+		msg, more := <-(dp.sendBuffer)
 		// serialize data
+		if !more {
+			return
+		}
 		byteData := (*msg).Serialize()
 		_, err := dp.conn.Write(byteData)
 		if err != nil {
 			fmt.Println("failed to write conn")
 			fmt.Println(err)
+			dp.Close()
 			return
 		}
 	}
 }
 
+func (dp *Datapath) parseLoop() {
+	defer func() { dp.done <- true }()
+	for {
+		buf, more := <-dp.readBuffer
+		if !more {
+			return
+		}
+		dp.handlePacket(buf)
+	}
+}
+
 func (dp *Datapath) recvLoop() {
+	go dp.parseLoop()
 	// for more information see https://www.opennetworking.org/wp-content/uploads/2014/10/openflow-spec-v1.3.0.pdf
 	const kHeaderSize = 8
 	reader := bufio.NewReader(dp.conn)
 	buf := make([]byte, 1024*64)
 	for {
+		if dp.isShuttingDown() {
+			return
+		}
 		for i := 0; i < kHeaderSize; i++ {
 			b, err := reader.ReadByte() // read len prefix and len
 			if err != nil {
-				fmt.Println("failed to read conn")
-				fmt.Println(err)
+				if !dp.isShuttingDown() {
+					fmt.Println("failed to read conn")
+					fmt.Println(err)
+					dp.Close()
+				}
 				return
 			}
 			buf[i] = b
@@ -66,8 +125,10 @@ func (dp *Datapath) recvLoop() {
 		for bufPos < msgLen {
 			read, err := reader.Read(buf[bufPos:msgLen])
 			if err != nil {
-				fmt.Println("failed to read conn")
-				fmt.Println(err)
+				if !dp.isShuttingDown() {
+					fmt.Println("failed to read conn")
+					fmt.Println(err)
+				}
 				return
 			}
 			bufPos += read
@@ -75,7 +136,11 @@ func (dp *Datapath) recvLoop() {
 		if bufPos != msgLen {
 			fmt.Printf("Strange ofp packet, len in packet %d, received len %d\n", msgLen, bufPos)
 		}
-		dp.handlePacket(buf[0:bufPos])
+		if !dp.isShuttingDown() {
+			packet := make([]byte, msgLen)
+			copy(packet, buf[0:bufPos])
+			dp.readBuffer <- packet
+		}
 	}
 }
 
@@ -94,7 +159,7 @@ func (dp *Datapath) handlePacket(buf []byte) {
 }
 
 func (dp *Datapath) dispatchHandler(msg ofp13.OFMessage) {
-	apps := GetAppManager().GetApplications()
+	apps := dp.server.GetHandler()
 	for _, app := range apps {
 		switch msgi := msg.(type) {
 		// if message is OfpHeader
@@ -242,7 +307,7 @@ func (dp *Datapath) dispatchHandler(msg ofp13.OFMessage) {
  */
 func (dp *Datapath) Send(message ofp13.OFMessage) bool {
 	// push data
-	(dp.sendBuffer) <- &message
+	dp.sendBuffer <- &message
 	return true
 }
 
