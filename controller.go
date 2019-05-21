@@ -25,20 +25,22 @@ type OFController struct {
 	inShutdown   int32
 	handlers     []interface{}
 	dps          []*Datapath
+	dispatcher   *Dispatcher
 }
 
 func NewOFController() *OFController {
 	ofc := new(OFController)
 	ofc.echoInterval = 60
+	ofc.dispatcher = NewDispatcher(ofc)
 	return ofc
 }
 
-// func (c *OFController) HandleHello(msg *ofp13.OfpHello, dp *Datapath) {
-// 	fmt.Println("recv Hello")
-// 	// send feature request
-// 	featureReq := ofp13.NewOfpFeaturesRequest()
-// 	Send(dp, featureReq)
-// }
+func (c *OFController) HandleHello(msg *ofp13.OfpHello, dp *Datapath) {
+	fmt.Println("recv Hello")
+	// send feature request
+	featureReq := ofp13.NewOfpFeaturesRequest()
+	dp.Send(featureReq)
+}
 
 func (c *OFController) HandleSwitchFeatures(msg *ofp13.OfpSwitchFeatures, dp *Datapath) {
 	fmt.Println("recv SwitchFeatures")
@@ -53,18 +55,12 @@ func (c *OFController) HandleEchoRequest(msg *ofp13.OfpHeader, dp *Datapath) {
 	(*dp).Send(echo)
 }
 
-func (c *OFController) ConnectionUp() {
-	// handle connection up
-}
-
-func (c *OFController) ConnectionDown() {
-	// handle connection down
-}
-
 func (c *OFController) sendEchoLoop() {
-	// send echo request forever
+	// TODO: send echo request forever
 }
 
+// Serve accepts incoming connections on the Listener l, creating a
+// new service goroutines for each.
 func (c *OFController) Serve(l net.Listener) error {
 	if c.isShuttingDown() {
 		return http.ErrServerClosed
@@ -75,26 +71,15 @@ func (c *OFController) Serve(l net.Listener) error {
 		conn, err := l.Accept()
 		if err != nil {
 			if c.isShuttingDown() {
-				return nil
+				return http.ErrServerClosed
 			}
 			return err
 		}
-		go func() {
-			dp := handleConnection(conn, c)
-			if dp != nil {
-				c.mtx.Lock()
-				c.dps = append(c.dps, dp)
-				dp.RegisterOnClose(c.onDpClosed)
-				c.mtx.Unlock()
-			}
-		}()
+		go c.handleConnection(conn)
 	}
 }
 
 func (c *OFController) onDpClosed(inDp *Datapath) {
-	if c.isShuttingDown() {
-		return
-	}
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
 	for i, dp := range c.dps {
@@ -104,6 +89,8 @@ func (c *OFController) onDpClosed(inDp *Datapath) {
 	}
 }
 
+// ServerLoop listens on the network port and then
+// calls Serve to handle requests on incoming connections.
 func ServerLoop(listenPort int, h interface{}) {
 	var port int
 
@@ -132,6 +119,7 @@ func ServerLoop(listenPort int, h interface{}) {
 	}
 }
 
+// Close all connections and the server.
 func (c *OFController) Close() error {
 	atomic.StoreInt32(&c.inShutdown, 1)
 	c.mtx.Lock()
@@ -143,6 +131,10 @@ func (c *OFController) Close() error {
 	return err
 }
 
+// Shutdown gracefully shuts down the server without interrupting any
+// active connections
+// Once Shutdown has been called on a server, it may not be reused;
+// future calls to methods such as Serve will return ErrServerClosed.
 func (c *OFController) Shutdown(ctx context.Context) error {
 	atomic.StoreInt32(&c.inShutdown, 1)
 	c.mtx.Lock()
@@ -161,6 +153,7 @@ func (c *OFController) isShuttingDown() bool {
 	return atomic.LoadInt32(&c.inShutdown) != 0
 }
 
+// RegisterOnShutdown registers a function to call on Shutdown.
 func (c *OFController) RegisterOnShutdown(f func()) {
 	c.mtx.Lock()
 	c.onShutdown = append(c.onShutdown, f)
@@ -173,29 +166,35 @@ func (c *OFController) RegisterHandler(h interface{}) {
 	c.mtx.Unlock()
 }
 
-func (c *OFController) GetHandler() []interface{} {
+func (c *OFController) forEachHandler(f func(v interface{})) {
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
-	return c.handlers
+	f(c)
+	for _, h := range c.handlers {
+		f(h)
+	}
 }
 
 /**
  *
  */
-func handleConnection(conn net.Conn, s *OFController) *Datapath {
+func (c *OFController) handleConnection(conn net.Conn) {
 	// send hello
 	hello := ofp13.NewOfpHello()
 	_, err := conn.Write(hello.Serialize())
 	if err != nil {
 		fmt.Println(err)
-		return nil
+		return
 	}
 
 	// create datapath
-	dp := NewDatapath(conn, s)
+	dp := NewDatapath(conn, c.dispatcher)
+	c.mtx.Lock()
+	c.dps = append(c.dps, dp)
+	dp.RegisterOnClose(c.onDpClosed)
+	c.mtx.Unlock()
 
 	// launch goroutine
 	go dp.recvLoop()
 	go dp.sendLoop()
-	return dp
 }
