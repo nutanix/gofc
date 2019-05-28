@@ -1,12 +1,11 @@
 package gofc
 
 import (
-	"bufio"
 	"encoding/binary"
 	"fmt"
 	"net"
 	"strings"
-	"sync/atomic"
+	"sync"
 
 	"github.com/nutanix/gofc/ofprotocol/ofp13"
 )
@@ -21,14 +20,15 @@ type Datapath struct {
 	ofpversion string
 	ports      int
 	inShutdown int32
-	dispatcher *Dispatcher
+	dispatcher IDispatcher
 	onClose    []func(dp *Datapath)
+	lock       sync.Mutex
 }
 
 /**
  * ctor
  */
-func NewDatapath(conn net.Conn, d *Dispatcher) *Datapath {
+func NewDatapath(conn net.Conn, d IDispatcher) *Datapath {
 	dp := new(Datapath)
 	dp.sendBuffer = make(chan *ofp13.OFMessage, 10)
 	dp.readBuffer = make(chan []byte, 10)
@@ -38,32 +38,58 @@ func NewDatapath(conn net.Conn, d *Dispatcher) *Datapath {
 	return dp
 }
 
-func (dp *Datapath) Shutdown() {
-	atomic.StoreInt32(&dp.inShutdown, 1)
-	close(dp.readBuffer)
-	<-dp.done
-	close(dp.sendBuffer)
-	<-dp.done
-	close(dp.done)
-	dp.Close()
-}
-
-func (dp *Datapath) isShuttingDown() bool { return atomic.LoadInt32(&dp.inShutdown) == 1 }
+func (dp *Datapath) isShuttingDown() bool { return dp.inShutdown == 1 }
 
 func (dp *Datapath) RegisterOnClose(f func(dp *Datapath)) {
+	dp.lock.Lock()
+	defer dp.lock.Unlock()
 	if dp.isShuttingDown() {
 		return
 	}
 	dp.onClose = append(dp.onClose, f)
 }
 
+func (dp *Datapath) Start() {
+	go dp.recvLoop()
+	go dp.sendLoop()
+}
+
 func (dp *Datapath) Close() {
-	atomic.StoreInt32(&dp.inShutdown, 1)
-	if dp.isShuttingDown(){
+	dp.lock.Lock()
+	if dp.isShuttingDown() {
 		return
 	}
+	dp.inShutdown = 1
+	if err := dp.conn.Close(); err != nil {
+		fmt.Printf("%v", err)
+	}
+	for len(dp.sendBuffer) > 0 {
+		<-dp.sendBuffer
+	}
 	close(dp.sendBuffer)
+	for len(dp.readBuffer) > 0 {
+		<-dp.readBuffer
+	}
 	close(dp.readBuffer)
+	dp.lock.Unlock()
+
+	for _, f := range dp.onClose {
+		f(dp)
+	}
+}
+
+func (dp *Datapath) Shutdown() {
+	dp.lock.Lock()
+	if dp.isShuttingDown() {
+		return
+	}
+	dp.inShutdown = 1
+	dp.lock.Unlock()
+	close(dp.readBuffer)
+	<-dp.done
+	close(dp.sendBuffer)
+	<-dp.done
+	close(dp.done)
 	if err := dp.conn.Close(); err != nil {
 		fmt.Printf("%v", err)
 	}
@@ -107,33 +133,43 @@ func (dp *Datapath) recvLoop() {
 	go dp.parseLoop()
 	// for more information see https://www.opennetworking.org/wp-content/uploads/2014/10/openflow-spec-v1.3.0.pdf
 	const kHeaderSize = 8
-	reader := bufio.NewReader(dp.conn)
 	buf := make([]byte, 1024*64)
 	for {
+		dp.lock.Lock()
 		if dp.isShuttingDown() {
 			return
 		}
-		for i := 0; i < kHeaderSize; i++ {
-			b, err := reader.ReadByte() // read len prefix and len
+		dp.lock.Unlock()
+		for i := 0; i < kHeaderSize; {
+			b, err := dp.conn.Read(buf[i : i+1]) // read len prefix and len
 			if err != nil {
+				dp.lock.Lock()
 				if !dp.isShuttingDown() {
 					fmt.Println("failed to read conn")
 					fmt.Println(err)
+					dp.lock.Unlock()
 					dp.Close()
+					return
 				}
+				dp.lock.Unlock()
 				return
 			}
-			buf[i] = b
+			i += b
 		}
 		msgLen := (int)(binary.BigEndian.Uint16(buf[2:]))
 		bufPos := kHeaderSize
 		for bufPos < msgLen {
-			read, err := reader.Read(buf[bufPos:msgLen])
+			read, err := dp.conn.Read(buf[bufPos:msgLen])
 			if err != nil {
+				dp.lock.Lock()
 				if !dp.isShuttingDown() {
 					fmt.Println("failed to read conn")
 					fmt.Println(err)
+					dp.lock.Unlock()
+					dp.Close()
+					return
 				}
+				dp.lock.Unlock()
 				return
 			}
 			bufPos += read
@@ -141,11 +177,13 @@ func (dp *Datapath) recvLoop() {
 		if bufPos != msgLen {
 			fmt.Printf("Strange ofp packet, len in packet %d, received len %d\n", msgLen, bufPos)
 		}
+		packet := make([]byte, msgLen)
+		copy(packet, buf[0:msgLen])
+		dp.lock.Lock()
 		if !dp.isShuttingDown() {
-			packet := make([]byte, msgLen)
-			copy(packet, buf[0:msgLen])
 			dp.readBuffer <- packet
 		}
+		dp.lock.Unlock()
 	}
 }
 
@@ -167,6 +205,11 @@ func (dp *Datapath) handlePacket(buf []byte) {
  *
  */
 func (dp *Datapath) Send(message ofp13.OFMessage) bool {
+	dp.lock.Lock()
+	if dp.isShuttingDown() {
+		return false
+	}
+	dp.lock.Unlock()
 	// push data
 	dp.sendBuffer <- &message
 	return true

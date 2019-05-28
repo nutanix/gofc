@@ -80,13 +80,13 @@ func main() {
 
 	// start server
 
-	l, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: gofc.DEFAULT_PORT + 1})
+	l, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: gofc.DefaultPort + 1})
 	if err != nil {
 		panic(err)
 	}
 	go func() {
 		if err := controller.Serve(l); err != nil {
-			panic(err)
+			fmt.Print(err)
 		}
 	}()
 	sigs := make(chan os.Signal, 1)

@@ -3,15 +3,18 @@ package gofc
 import (
 	"context"
 	"fmt"
+	"github.com/nutanix/gofc/ofprotocol/ofp13"
 	"net"
 	"net/http"
 	"sync"
-	"sync/atomic"
-
-	"github.com/nutanix/gofc/ofprotocol/ofp13"
 )
 
-var DEFAULT_PORT = 6653
+var DefaultPort = 6653
+
+type HandlerStorage interface {
+	RegisterHandler(h interface{})
+	forEachHandler(f func(v interface{}))
+}
 
 /**
  * basic controller
@@ -22,10 +25,10 @@ type OFController struct {
 	listener     net.Listener
 	mtx          sync.Mutex
 	onShutdown   []func()
-	inShutdown   int32
+	inShutdown   bool
 	handlers     []interface{}
 	dps          []*Datapath
-	dispatcher   *Dispatcher
+	dispatcher   IDispatcher
 }
 
 func NewOFController() *OFController {
@@ -62,19 +65,26 @@ func (c *OFController) sendEchoLoop() {
 // Serve accepts incoming connections on the Listener l, creating a
 // new service goroutines for each.
 func (c *OFController) Serve(l net.Listener) error {
-	if c.isShuttingDown() {
+	c.mtx.Lock()
+	if c.inShutdown {
+		c.mtx.Unlock()
 		return http.ErrServerClosed
 	}
 
 	c.listener = l
+	c.mtx.Unlock()
 	for {
 		conn, err := l.Accept()
+		c.mtx.Lock()
 		if err != nil {
-			if c.isShuttingDown() {
+			if c.inShutdown {
+				c.mtx.Unlock()
 				return http.ErrServerClosed
 			}
+			c.mtx.Unlock()
 			return err
 		}
+		c.mtx.Unlock()
 		go c.handleConnection(conn)
 	}
 }
@@ -120,15 +130,20 @@ func ServerLoop(listenPort int, h interface{}) {
 }
 
 // Close all connections and the server.
-func (c *OFController) Close() error {
-	atomic.StoreInt32(&c.inShutdown, 1)
+func (c *OFController) Close() (err error) {
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
-	err := c.listener.Close()
-	for _, dp := range c.dps {
-		dp.Close()
+
+	c.inShutdown = true
+	if c.listener != nil {
+		err = c.listener.Close()
 	}
-	return err
+	for _, dp := range c.dps {
+		c.mtx.Unlock()
+		dp.Close()
+		c.mtx.Lock()
+	}
+	return
 }
 
 // Shutdown gracefully shuts down the server without interrupting any
@@ -136,21 +151,25 @@ func (c *OFController) Close() error {
 // Once Shutdown has been called on a server, it may not be reused;
 // future calls to methods such as Serve will return ErrServerClosed.
 func (c *OFController) Shutdown(ctx context.Context) error {
-	atomic.StoreInt32(&c.inShutdown, 1)
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
+	if c.inShutdown {
+		return http.ErrServerClosed
+	}
+	if c.listener == nil {
+		return nil
+	}
+	c.inShutdown = true
 	err := c.listener.Close()
 	for _, dp := range c.dps {
+		c.mtx.Unlock()
 		dp.Shutdown()
+		c.mtx.Lock()
 	}
 	for _, f := range c.onShutdown {
 		go f()
 	}
 	return err
-}
-
-func (c *OFController) isShuttingDown() bool {
-	return atomic.LoadInt32(&c.inShutdown) != 0
 }
 
 // RegisterOnShutdown registers a function to call on Shutdown.
@@ -193,8 +212,5 @@ func (c *OFController) handleConnection(conn net.Conn) {
 	c.dps = append(c.dps, dp)
 	dp.RegisterOnClose(c.onDpClosed)
 	c.mtx.Unlock()
-
-	// launch goroutine
-	go dp.recvLoop()
-	go dp.sendLoop()
+	dp.Start()
 }

@@ -7,12 +7,16 @@ import (
 	"github.com/nutanix/gofc/ofprotocol/ofp13"
 )
 
+type IDispatcher interface {
+	handleMessage(msg ofp13.OFMessage, dp *Datapath)
+}
+
 type Dispatcher struct {
-	server *OFController
+	server HandlerStorage
 	mtx    sync.Mutex
 }
 
-func NewDispatcher(s *OFController) *Dispatcher {
+func NewDispatcher(s HandlerStorage) *Dispatcher {
 	d := new(Dispatcher)
 	d.server = s
 	return d
@@ -20,7 +24,7 @@ func NewDispatcher(s *OFController) *Dispatcher {
 
 func (d *Dispatcher) handleMessage(msg ofp13.OFMessage, dp *Datapath) {
 	d.mtx.Lock()
-	defer func() { d.mtx.Unlock() }()
+	defer d.mtx.Unlock()
 	d.server.forEachHandler(func(app interface{}) {
 		switch msgi := msg.(type) {
 		// if message is OfpHeader
