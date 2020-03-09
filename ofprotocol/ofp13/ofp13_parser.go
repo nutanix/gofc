@@ -3,8 +3,8 @@ package ofp13
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"net"
+	"sync/atomic"
 )
 
 func Parse(packet []byte) (msg OFMessage) {
@@ -59,9 +59,8 @@ func Parse(packet []byte) (msg OFMessage) {
 var xid uint32 = 0
 
 func nextXid() uint32 {
-	tmp := xid
-	xid += 1
-	return tmp
+	// atomic.Add returns new value, needs old value
+	return atomic.AddUint32(&xid, 1) - 1
 }
 
 /*****************************************************/
@@ -1403,12 +1402,7 @@ func (m *OfpMatch) Parse(packet []byte) {
 	index += 2
 
 	for index < (int(m.Length) - 4) {
-		mf, err := parseOxmField(packet[index:])
-		if err != nil {
-			fmt.Printf("Error on parsing oxm field: %v", err)
-			index += (int)(packet[index+3]) + 4  // 4 -sizeof(header)
-			continue
-		}
+		mf := parseOxmField(packet[index:])
 		m.OxmFields = append(m.OxmFields, mf)
 		index += mf.Size()
 	}
@@ -1427,210 +1421,210 @@ func (m *OfpMatch) Append(f OxmField) {
 	m.OxmFields = append(m.OxmFields, f)
 }
 
-func parseOxmField(packet []byte) (OxmField, error) {
+func parseOxmField(packet []byte) OxmField {
 	header := binary.BigEndian.Uint32(packet[0:])
 	switch oxmField(header) {
 	case OFPXMT_OFB_IN_PORT:
 		mf := NewOxmInPort(0)
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_IN_PHY_PORT:
 		mf := NewOxmInPhyPort(0)
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_METADATA:
 		mf := NewOxmMetadata(0)
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_ETH_DST:
 		mf, err := NewOxmEthDst("00:00:00:00:00:00")
 		if err != nil {
-			return nil, err
+			// TODO: error handling
 		}
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_ETH_SRC:
 		mf, err := NewOxmEthSrc("00:00:00:00:00:00")
 		if err != nil {
-			return nil, err
+			// TODO: error handling
 		}
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_ETH_TYPE:
 		mf := NewOxmEthType(0)
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_VLAN_VID:
 		mf := NewOxmVlanVid(0)
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_VLAN_PCP:
 		mf := NewOxmVlanPcp(0)
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_IP_DSCP:
 		mf := NewOxmIpDscp(0)
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_IP_ECN:
 		mf := NewOxmIpEcn(0)
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_IP_PROTO:
 		mf := NewOxmIpProto(0)
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_IPV4_SRC:
 		mf, err := NewOxmIpv4Src("0.0.0.0")
 		if err != nil {
-			return nil, err
+			// TODO: error handling
 		}
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_IPV4_DST:
 		mf, err := NewOxmIpv4Dst("0.0.0.0")
 		if err != nil {
-			return nil, err
+			// TODO: error handling
 		}
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_TCP_SRC:
 		mf := NewOxmTcpSrc(0)
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_TCP_DST:
 		mf := NewOxmTcpDst(0)
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_UDP_SRC:
 		mf := NewOxmUdpSrc(0)
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_UDP_DST:
 		mf := NewOxmUdpDst(0)
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_SCTP_SRC:
 		mf := NewOxmSctpSrc(0)
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_SCTP_DST:
 		mf := NewOxmSctpDst(0)
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_ICMPV4_TYPE:
 		mf := NewOxmIcmpType(0)
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_ICMPV4_CODE:
 		mf := NewOxmIcmpCode(0)
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_ARP_OP:
 		mf := NewOxmArpOp(0)
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_ARP_SPA:
 		mf, err := NewOxmArpSpa("0.0.0.0")
 		if err != nil {
-			return nil, err
+			// TODO: error handling
 		}
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_ARP_TPA:
 		mf, err := NewOxmArpTpa("0.0.0.0")
 		if err != nil {
-			return nil, err
+			// TODO: error handling
 		}
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_ARP_SHA:
 		mf, err := NewOxmArpSha("00:00:00:00:00:00")
 		if err != nil {
-			return nil, err
+			// TODO: error handling
 		}
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_ARP_THA:
 		mf, err := NewOxmArpTha("00:00:00:00:00:00")
 		if err != nil {
-			return nil, err
+			// TODO: error handling
 		}
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_IPV6_SRC:
 		mf, err := NewOxmIpv6Src("::")
 		if err != nil {
-			return nil, err
+			// TODO: error handling
 		}
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_IPV6_DST:
 		mf, err := NewOxmIpv6Dst("::")
 		if err != nil {
-			return nil, err
+			// TODO: error handling
 		}
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_IPV6_FLABEL:
 		mf := NewOxmIpv6FLabel(0)
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_ICMPV6_TYPE:
 		mf := NewOxmIcmpv6Type(0)
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_ICMPV6_CODE:
 		mf := NewOxmIcmpv6Code(0)
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_IPV6_ND_TARGET:
 		mf, err := NewOxmIpv6NdTarget("0.0.0.0")
 		if err != nil {
-			return nil, err
+			// TODO: error handling
 		}
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_IPV6_ND_SLL:
 		mf, err := NewOxmIpv6NdSll("00:00:00:00:00:00")
 		if err != nil {
-			return nil, err
+			// TODO: error handling
 		}
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_IPV6_ND_TLL:
 		mf, err := NewOxmIpv6NdTll("00:00:00:00:00:00")
 		if err != nil {
-			return nil, err
+			// TODO: error handling
 		}
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_MPLS_LABEL:
 		mf := NewOxmMplsLabel(0)
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_MPLS_TC:
 		mf := NewOxmMplsTc(0)
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_MPLS_BOS:
 		mf := NewOxmMplsBos(0)
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_PBB_ISID:
 		mf := NewOxmPbbIsid([3]uint8{0, 0, 0})
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_TUNNEL_ID:
 		mf := NewOxmTunnelId(0)
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	case OFPXMT_OFB_IPV6_EXTHDR:
 		mf := NewOxmIpv6ExtHeader(0)
 		mf.Parse(packet)
-		return mf, nil
+		return mf
 	default:
-		return nil, errors.New(fmt.Sprintf("Unknown oxm type. Header: %v", header))
+		return nil
 	}
 }
 

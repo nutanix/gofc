@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
-
-	"github.com/Kmotiko/gofc"
-	"github.com/Kmotiko/gofc/ofprotocol/ofp13"
+	"github.com/nutanix/gofc"
+	"github.com/nutanix/gofc/ofprotocol/ofp13"
+	"net"
+	"os"
+	"os/signal"
+	"time"
 )
 
 type SampleController struct {
@@ -70,10 +74,29 @@ func (c *SampleController) HandleAggregateStatsReply(msg *ofp13.OfpMultipartRepl
 }
 
 func main() {
-	// regist app
-	ofc := NewSampleController()
-	gofc.GetAppManager().RegistApplication(ofc)
+	// register app
+	controller := gofc.NewOFController()
+	controller.RegisterHandler(NewSampleController())
 
 	// start server
-	gofc.ServerLoop(gofc.DEFAULT_PORT)
+
+	l, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: gofc.DefaultPort + 1})
+	if err != nil {
+		panic(err)
+	}
+	go func() {
+		if err := controller.Serve(l); err != nil {
+			fmt.Print(err)
+		}
+	}()
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs)
+	go func() {
+		_ = <-sigs
+		err = controller.Shutdown(context.Background())
+		os.Exit(0)
+	}()
+	for {
+		time.Sleep(time.Minute)
+	}
 }
