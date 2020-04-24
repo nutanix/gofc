@@ -1,5 +1,9 @@
 package gofc
 
+import (
+	"fmt"
+)
+
 type IFMap map[string]interface{}
 
 type AppManager struct {
@@ -20,6 +24,7 @@ func GetAppManager() *AppManager {
 
 func (manager *AppManager) RegistApplication(app interface{}) {
 	manager.applications = append(manager.applications, app)
+	fmt.Printf("Registered app %+v\n", app)
 }
 
 func (manager *AppManager) GetApplications() []interface{} {

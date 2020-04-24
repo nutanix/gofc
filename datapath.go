@@ -28,6 +28,7 @@ func NewDatapath(conn *net.TCPConn) *Datapath {
 	dp := new(Datapath)
 	dp.sendBuffer = make(chan *ofp13.OFMessage, 10)
 	dp.conn = conn
+	fmt.Printf("new dp %+v\n", dp)
 	return dp
 }
 
@@ -39,7 +40,7 @@ func (dp *Datapath) sendLoop() {
 		byteData := (*msg).Serialize()
 		_, err := dp.conn.Write(byteData)
 		if err != nil {
-			fmt.Println("failed to write conn")
+			fmt.Printf("failed to write conn %+v\n", dp)
 			fmt.Println(err)
 			return
 		}
@@ -55,7 +56,7 @@ func (dp *Datapath) recvLoop() {
 		for i := 0; i < kHeaderSize; i++ {
 			b, err := reader.ReadByte() // read len prefix and len
 			if err != nil {
-				fmt.Println("failed to read conn")
+				fmt.Printf("failed to read conn %+v\n", dp)
 				fmt.Println(err)
 				return
 			}
@@ -66,7 +67,7 @@ func (dp *Datapath) recvLoop() {
 		for bufPos < msgLen {
 			read, err := reader.Read(buf[bufPos:msgLen])
 			if err != nil {
-				fmt.Println("failed to read conn")
+				fmt.Printf("failed to read conn %+v\n", dp)
 				fmt.Println(err)
 				return
 			}
