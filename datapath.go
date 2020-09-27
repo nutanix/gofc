@@ -21,14 +21,25 @@ type Datapath struct {
 	ports      int
 }
 
+type DPIntf interface {
+	Send(message ofp13.OFMessage) bool
+	GetRemoteIp() string
+	GetLocalIp() string
+}
+
 /**
  * ctor
  */
-func NewDatapath(conn *net.TCPConn) *Datapath {
+func NewDatapath(conn *net.TCPConn) DPIntf {
 	dp := new(Datapath)
 	dp.sendBuffer = make(chan *ofp13.OFMessage, 10)
 	dp.conn = conn
 	fmt.Printf("new dp %+v\n", dp)
+
+	// launch goroutine
+	go dp.recvLoop()
+	go dp.sendLoop()
+
 	return dp
 }
 

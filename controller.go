@@ -95,9 +95,5 @@ func handleConnection(conn *net.TCPConn) {
 	}
 
 	// create datapath
-	dp := NewDatapath(conn)
-
-	// launch goroutine
-	go dp.recvLoop()
-	go dp.sendLoop()
+	_ = NewDatapath(conn)
 }
