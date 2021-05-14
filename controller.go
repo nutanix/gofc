@@ -54,7 +54,8 @@ func (c *OFController) ConnectionDown() {
 func (c *OFController) sendEchoLoop(dp *Datapath) {
 	// send echo request forever, first tick goes after
 	// echo interval
-	ticker := time.NewTicker(c.echoInterval * time.Second)
+	fmt.Println("Controller echo loop started for dp: %+v", dp)
+	ticker := time.NewTicker(time.Duration(c.echoInterval) * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
 		echoReq := ofp13.NewOfpEchoRequest()
