@@ -19,7 +19,7 @@ type OFController struct {
 
 func NewOFController() *OFController {
 	ofc := new(OFController)
-	ofc.echoInterval = 5
+	ofc.echoInterval = 3
 	return ofc
 }
 
@@ -54,7 +54,7 @@ func (c *OFController) ConnectionDown() {
 func (c *OFController) sendEchoLoop(dp *Datapath) {
 	// send echo request forever, first tick goes after
 	// echo interval
-	fmt.Println("Controller echo loop started for dp: %+v", dp)
+	fmt.Println("Controller echo loop started for dp: %v", dp)
 	ticker := time.NewTicker(time.Duration(c.echoInterval) * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
