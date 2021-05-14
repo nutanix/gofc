@@ -3,6 +3,7 @@ package gofc
 import (
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/nutanix/gofc/ofprotocol/ofp13"
 )
@@ -18,7 +19,7 @@ type OFController struct {
 
 func NewOFController() *OFController {
 	ofc := new(OFController)
-	ofc.echoInterval = 60
+	ofc.echoInterval = 5
 	return ofc
 }
 
@@ -50,8 +51,18 @@ func (c *OFController) ConnectionDown() {
 	// handle connection down
 }
 
-func (c *OFController) sendEchoLoop() {
-	// send echo request forever
+func (c *OFController) sendEchoLoop(dp *Datapath) {
+	// send echo request forever, first tick goes after
+	// echo interval
+	ticker := time.NewTicker(c.echoInterval * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		echoReq := ofp13.NewOfpEchoRequest()
+		// ToDo: handle graceful shutdown for stale dps as this
+		// go thread will never exit and may be hung on sendMessage
+		// channel.
+		dp.Send(echoReq)
+	}
 }
 
 func ServerLoop(listenPort int) {
@@ -79,14 +90,14 @@ func ServerLoop(listenPort int) {
 		if err != nil {
 			return
 		}
-		go handleConnection(conn)
+		go handleConnection(ofc, conn)
 	}
 }
 
 /**
  *
  */
-func handleConnection(conn *net.TCPConn) {
+func handleConnection(c *OFController, conn *net.TCPConn) {
 	// send hello
 	hello := ofp13.NewOfpHello()
 	_, err := conn.Write(hello.Serialize())
@@ -96,6 +107,10 @@ func handleConnection(conn *net.TCPConn) {
 
 	// create datapath
 	dp := NewDatapath(conn)
+
+	// Start controller echo loop to keep
+	// switch connection alive
+	go c.sendEchoLoop(dp)
 
 	// launch goroutine
 	go dp.recvLoop()
